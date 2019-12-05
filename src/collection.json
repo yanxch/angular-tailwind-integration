@@ -1,0 +1,9 @@
+{
+  "$schema": "../node_modules/@angular-devkit/schematics/collection-schema.json",
+  "schematics": {
+    "ng-add": {
+      "description": "Configure Tailwind for Angular CLI projects",
+      "factory": "./angular-tailwind-integration/index#angularTailwindIntegration"
+    }
+  }
+}
