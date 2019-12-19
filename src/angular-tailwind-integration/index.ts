@@ -1,69 +1,189 @@
-import { apply, branchAndMerge, chain, mergeWith, move, Rule, SchematicContext, Tree, url, MergeStrategy } from '@angular-devkit/schematics';
-import { NodePackageInstallTask } from '@angular-devkit/schematics/tasks';
-import { addPackageJsonDependency, NodeDependencyType as DepType } from '@schematics/angular/utility/dependencies';
-
-// You don't have to export the function as default. You can also have more than one rule factory
-// per file.
-export function angularTailwindIntegration(_options: any): Rule {
-  return (tree: Tree, _context: SchematicContext) => {
-
-
-    // 1) add dependencies
-    const webpackBuilderDependency =  { type: DepType.Dev, name: '@angular-builders/custom-webpack', version: '^8.4.0', overwrite: true };
-    const tailwindDependency = { type: DepType.Dev, name: 'tailwindcss', version: '^1.1.4', overwrite: true };
-    addPackageJsonDependency(tree, webpackBuilderDependency);
-    addPackageJsonDependency(tree, tailwindDependency);
-    _context.logger.log('info', `✅️ Added dev dependency to package.json: "${webpackBuilderDependency.name}", version: ` + webpackBuilderDependency.version);
-    _context.logger.log('info', `✅️ Added dev dependency to package.json: "${tailwindDependency.name}", version: ` + tailwindDependency.version);
-
-    // 2) Install Package
-    _context.addTask(new NodePackageInstallTask());
-    _context.logger.log('info', `✅️ Triggered npm install.`);
-
-    // 3) copy config files
-    const configFiles = apply(url('./files'), [
-      move('./tailwind')
-    ]);
-    _context.logger.log('info', `✅️ Copied tailwind configuration`);
-   
+import {WorkspaceSchema} from '@angular-devkit/core/src/experimental/workspace';
+import {apply, chain, forEach, mergeWith, move, noop, Rule, SchematicContext, SchematicsException, Tree, url, template} from '@angular-devkit/schematics';
+import {NodePackageInstallTask, RunSchematicTask} from '@angular-devkit/schematics/tasks';
+import {getWorkspace, updateWorkspace} from '@schematics/angular/utility/config';
+import {addPackageJsonDependency, NodeDependencyType as DepType, removePackageJsonDependency} from '@schematics/angular/utility/dependencies';
+import {AddSchema} from './schema';
+import {Builders} from '@schematics/angular/utility/workspace-models';
 
 
-    // 4) adjust angular.json
-    const angular_json = JSON.parse(tree.read('./angular.json')!.toString());
+export function addDependencies(options: AddSchema): Rule {
+  return (tree: Tree, context: SchematicContext) => {
 
-    const project = angular_json.projects[_options.project || angular_json.defaultProject];
+    const customWebpack = {
+      type: DepType.Dev,
+      name: '@angular-builders/custom-webpack',
+      version: options.customWebpackVersion || '^8.4.0',
+      overwrite: true
+    };
     
-    const currentBuild = project.architect.build;
-
-    project.architect['build'] = {
-        ...currentBuild,
-        builder: '@angular-builders/custom-webpack:browser',
-        options: {
-          ...currentBuild.options,
-          styles: [...currentBuild.options.styles, 'tailwind/tailwind.css'],
-          customWebpackConfig: {
-            path: 'tailwind/tailwind.webpack.js'
-          }
-        }
-    }
-
-    const currentServe = project.architect.serve;
-    project.architect['serve'] = {
-      ...currentServe,
-      builder: '@angular-builders/custom-webpack:dev-server',
-      options: {
-        ...currentServe.options,
-        customWebpackConfig: {
-          path: 'tailwind/tailwind.webpack.js'
-        }
-      }
+    const tailwind = {
+      type: DepType.Dev,
+      name: 'tailwindcss',
+      version: options.tailwindVersion || '^1.1.4',
+      overwrite: true
     };
 
-    tree.overwrite('angular.json', JSON.stringify(angular_json, null, 2));
-    _context.logger.log('info', `✅️ angular.json adjusted.`);
+    addPackageJsonDependency(tree, customWebpack);
+    addPackageJsonDependency(tree, tailwind);
 
-    return branchAndMerge(chain([
-      mergeWith(configFiles)
-    ]));
+    const installTaskId = context.addTask(new NodePackageInstallTask());
+
+    context.addTask(new RunSchematicTask('ng-add-setup', options), [installTaskId]);
   };
+}
+
+// this is the ng-add-setup schematic
+export function addTailwind(options: AddSchema): Rule {
+  return (tree: Tree, context: SchematicContext) => {
+
+    const workspace = getWorkspace(tree);
+    const project = getProject(options, workspace);
+    const architect = workspace.projects[project].architect;
+
+    if (!architect) throw new SchematicsException(`Expected node projects/${project}/architect in angular.json`);
+    if (!architect.build) throw new SchematicsException(`Expected node projects/${project}/architect/build in angular.json`);
+    if (!architect.serve) throw new SchematicsException(`Expected node projects/${project}/architect/serve in angular.json`);
+
+    architect.build.builder =  <any> '@angular-builders/custom-webpack:browser';
+    architect.serve.builder = <any> '@angular-builders/custom-webpack:dev-server';
+
+    const buildOptions = <any> architect.build.options;
+    const serveOptions = <any> architect.serve.options;
+
+    addWebpackOption(tree, buildOptions, context);
+    addWebpackOption(tree, serveOptions, context);
+    
+
+    addStylesOption(tree, buildOptions, options);
+    
+    return chain([
+      copyTailwindConfig(options),
+      renameStyles(options),
+      updateWorkspace(workspace)
+    ]);
+  };
+}
+
+function copyTailwindConfig(options: AddSchema): Rule {
+  return (tree: Tree, context: SchematicContext) => {   
+    const styleExtension = getStyleExtension(tree, options);
+    const configFiles = apply(url('./files'), [
+      template({ styleExtension }),
+      move('./tailwind'),
+      options.overwrite ? overwriteIfExists(tree) : noop()
+    ]);
+    return mergeWith(configFiles)(tree, context);
+  };
+}
+
+function renameStyles(options: AddSchema): Rule {
+  return (tree: Tree, context: SchematicContext) => {  
+    const styleExtension = getStyleExtension(tree, options); 
+    if (styleExtension === 'scss') {
+      tree.rename('/tailwind/tailwind.css', '/tailwind/tailwind.scss');
+    }
+    return tree;
+  };
+}
+
+function getProject(options: AddSchema, workspace: WorkspaceSchema) {
+  return options.project || workspace.defaultProject || Object.keys(workspace.projects)[0];
+}
+
+function overwriteIfExists(host: Tree): Rule {
+  return forEach(fileEntry => {
+    if (host.exists(fileEntry.path)) {
+      host.overwrite(fileEntry.path, fileEntry.content);
+      return null;
+    }
+    return fileEntry;
+  });
+}
+
+function addWebpackOption(tree: Tree, options: any, context: SchematicContext) {
+  if (options.customWebpackConfig) {
+
+    // TODO: Log content of tailwind.webpack.js
+    const source = `module: {
+      rules: [
+        {
+          test: /\.css$/,
+          use: [
+            {
+              loader: 'postcss-loader',
+              options: {
+                ident: 'postcss',
+                plugins: [
+                  require("postcss-import"),
+                  require('tailwindcss')('./tailwind.config.js'),
+                  require('autoprefixer')
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }`;    
+    context.logger.warn(`You are already using a customWebpackConfig in your angular.json. \nWe copied all necessary files to the tailwind folder in the root of your project. \nTake a look at the tailwind.webpack.js configuration and merge it with the existing webpack configuration manually. \nThat should be the only thing you'll have to do manually, all other tailwind configuration steps are already done.\n\n`);
+    context.logger.warn(`Please add following configuration manually to your custom webpack configuration: `);
+    context.logger.warn(`======= WEBPACK CONFIG =======`);
+    context.logger.warn(source);
+    context.logger.warn(`===============================`);
+  } else {
+    options.customWebpackConfig = {
+      path: 'tailwind/tailwind.webpack.js'
+    };
+  }
+}
+
+function addStylesOption(tree: Tree, options: any, schemaOptions: AddSchema) {
+  const styleExtension = getStyleExtension(tree, schemaOptions);
+
+  if (!options.styles.includes(`tailwind/tailwind.${styleExtension}`)) {
+    options.styles = [ ...options.styles, `tailwind/tailwind.${styleExtension}`];
+  }
+}
+
+function getStyleExtension(tree: Tree, options: AddSchema) {
+  const css = tree.exists('/src/styles.css') && 'css';
+  const scss = tree.exists('/src/styles.scss') && 'scss';
+
+  return css || scss || options.styleExtension || 'css';
+} 
+
+export function removeTailwind(options: AddSchema): Rule {
+  return (tree: Tree, context: SchematicContext) => {
+
+    removePackageJsonDependency(tree, '@angular-builders/custom-webpack');
+    removePackageJsonDependency(tree, 'tailwindcss');
+    
+    context.addTask(new NodePackageInstallTask());
+
+    const workspace = getWorkspace(tree);
+    const project = getProject(options, workspace);
+    const architect = workspace.projects[project].architect;
+
+    architect.build.builder = Builders.Browser;
+    architect.serve.builder = Builders.DevServer;
+
+    removeCustomWebpackConfig(architect.build.options);
+    removeCustomWebpackConfig(architect.serve.options);
+
+    removeTailwindStyles(architect.build.options, getStyleExtension(tree, options));
+
+    tree.delete('/tailwind');
+
+    return updateWorkspace(workspace);
+  };
+}
+
+function removeCustomWebpackConfig(options: any) {
+  if (options.customWebpackConfig.path === 'tailwind/tailwind.webpack.js') {
+    delete options.customWebpackConfig; 
+  }
+}
+
+function removeTailwindStyles(options: any, styleExtension: string) {
+  options.styles =  options.styles.filter((style: string) => style !== `tailwind/taiwind.${styleExtension}`);
 }

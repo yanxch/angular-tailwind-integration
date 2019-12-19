@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "id": "AngularTailwindIntegration",
+  "title": "Add Schema",
+  "type": "object",
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "The name of the project.",
+      "$default": {
+        "$source": "projectName"
+      }
+    },
+    "tailwindVersion": {
+      "type": "string",
+      "description": "The tailwind version that is used (default ^1.1.4)."
+    },
+    "customWebpackVersion": {
+      "type": "string",
+      "description": "The custom webpack builder version that is used (default ^8.4.0)."
+    },
+    "styleExtension": {
+      "type": "string",
+      "description": "Fallback configuration if styles extension can't be determined. Is automatically detected based on your styles.css file. (css|scss)."
+    },
+    "overwrite": {
+      "type": "string",
+      "description": "Shall we overwrite already existing tailwind configuration files? (default false)"
+    }
+  }
+}

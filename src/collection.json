@@ -3,7 +3,19 @@
   "schematics": {
     "ng-add": {
       "description": "Configure Tailwind for Angular CLI projects",
-      "factory": "./angular-tailwind-integration/index#angularTailwindIntegration"
+      "factory": "./angular-tailwind-integration/index#addDependencies",
+      "schema": "./angular-tailwind-integration/schema.json"
+    },
+    "ng-add-setup": {
+      "description": "Sets up the specified project after the ng-add dependencies have been installed.",
+      "private": true,
+      "factory": "./angular-tailwind-integration/index#addTailwind",
+      "schema": "./angular-tailwind-integration/schema.json"
+    },
+    "ng-remove": {
+      "description": "Remove Tailwind configuration",
+      "factory": "./angular-tailwind-integration/index#removeTailwind",
+      "schema": "./angular-tailwind-integration/schema.json"
     }
   }
 }
